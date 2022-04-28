@@ -1,0 +1,303 @@
+---
+title: "RR3 brain (subset) analysis"
+author: "Yuvarani Masarapu & Nima Taherpour"
+date: "2/22/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width=16, fig.height=12, warning=FALSE, message=FALSE)
+```
+
+# R markdown script to load counts into a seurat object, and
+# add metadata columns to the object.
+
+### Loading package libraries
+```{r}
+library(Seurat)
+library(SeuratObject)
+library(readr)
+library(readxl)
+library(sctransform)
+library(Matrix)
+library(RColorBrewer)
+library(Rcpp)
+library(harmony)
+```
+
+```{r}
+setwd('/Users/nima.taherpour/Documents/Master thesis projects/Seurat')
+```
+
+### Load processed data (from spaceranger) into seurat
+```{r warning=FALSE,eval=FALSE}
+#path to the directory where count matrices for each sample reside
+data_dir <- '/Users/nima.taherpour/Downloads/spaceranger-outs-data'#<path to the folder where individual samples reside>
+
+data.list <- list.files(data_dir, recursive = F, full.names = T)
+
+#iterate through all folders in data.list to load count matrices and images
+RR3.data.object <- lapply(data.list, function(folder){
+  each.object <- Load10X_Spatial(data.dir = folder)
+})
+
+rm(data_dir, data.list, dir)
+```
+
+### Add metadata
+
+```{r}
+brain_metadata <- read_excel("/Users/nima.taherpour/Downloads/metadata_rr3brain.xlsx")
+```
+
+```{r}
+for (data in 1:length(RR3.data.object)){
+  
+  #create metadata columns for each sample object
+  section.name = c(rep(brain_metadata$section.name[data],length(rownames(RR3.data.object[[data]]@meta.data))))
+  sample_condition = c(rep(brain_metadata$sample_condition[data],length(rownames(RR3.data.object[[data]]@meta.data))))
+  mouse.id = c(rep(brain_metadata$mouse.id[data], length(rownames(RR3.data.object[[data]]@meta.data))))
+  
+  #convert to named vectors
+  names(section.name) <- rownames(RR3.data.object[[data]]@meta.data)
+  names(sample_condition) <- rownames(RR3.data.object[[data]]@meta.data)
+  names(mouse.id) <- rownames(RR3.data.object[[data]]@meta.data)
+  
+  #add metadata columns to corresponding sample object
+  RR3.data.object[[data]] <- AddMetaData(object = RR3.data.object[[data]], metadata = section.name, col.name = "section.name")
+  RR3.data.object[[data]] <- AddMetaData(object = RR3.data.object[[data]], metadata = sample_condition, col.name = "sample_condition")
+  RR3.data.object[[data]] <- AddMetaData(object = RR3.data.object[[data]], metadata = mouse.id, col.name = "mouse.id")
+  
+  rm(section.name, sample_condition, mouse.id)
+}
+
+rm(data)
+```
+
+
+```{r}
+saveRDS(RR3.data.object, file = "brain_unfilt.rds")
+```
+
+# Quality Control
+
+## Filtering MT genes, Ribo genes
+
+OBS! write your own script here, if not, then ask Yuvarani.
+
+```{r}
+RR3.data.object <- list(RR3.data.object[[1]],RR3.data.object[[2]],RR3.data.object[[3]],RR3.data.object[[4]])
+RR3.data.object <- lapply(RR3.data.object,function(X) {X[['percent.mt']] <-PercentageFeatureSet(X, pattern = '^mt-'); X})
+RR3.data.object <- lapply(RR3.data.object,function(X) {X[['percent.ribo']] <-PercentageFeatureSet(X, pattern = '^Rpl|^Rps'); X})
+lapply(RR3.data.object,function(X) {VlnPlot(X, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt",'percent.ribo'), ncol = 4)
+})
+
+#filter.genes <-lapply(RR3.data.object, function(X) {G <- grep(pattern = c('^mt-','^^Rpl|^Rps'), x = rownames(X), value = TRUE)
+#G = G[-c(1)]})
+#data.object.filter <- lapply(RR3.data.object, function(obj){
+  #obj = obj[rownames(obj)!='^mt-', ]})
+
+```
+
+```{r}
+saveRDS(RR3.data.object, file = "brain_percentmtribo.rds")
+```
+
+
+```{r}
+#Identification of all mitochondrial and Ribosome genes.
+filter.genes <-lapply(RR3.data.object, function(X) {G <- grep(pattern ='^mt-|^Rpl|^Rps', x = rownames(X), value = TRUE)})
+
+#Filtering off mitochondrial and Ribosome genes. 
+for(index in 1:length(RR3.data.object)){
+  RR3.data.object[[index]] <- RR3.data.object[[index]][!(rownames(RR3.data.object[[index]]) %in% filter.genes[[index]]), ]
+}
+
+```
+
+
+```{r}
+#making sure that the percentage of mitochondrial and Ribosome genes are 0
+RR3.data.object <- list(RR3.data.object[[1]],RR3.data.object[[2]],RR3.data.object[[3]],RR3.data.object[[4]])
+RR3.data.object <- lapply(RR3.data.object,function(X) {X[['percent.mt']] <-PercentageFeatureSet(X, pattern = '^mt-'); X})
+RR3.data.object <- lapply(RR3.data.object,function(X) {X[['percent.ribo']] <-PercentageFeatureSet(X, pattern = '^Rpl|^Rps'); X})
+```
+
+## Filtering for low quality spots
+
+* Spot-level filtering
+  * nGene per spot >= 200
+  * nUMI per spot >= 100
+
+* Gene-level filtering
+  * Keep gene if detected in atleast 1 spot
+
+```{r eval=FALSE}
+data.object.filter <- lapply(RR3.data.object, function(obj){
+  obj <- obj[rowSums(obj) > 0, (obj$nCount_Spatial >= 100) & (obj$nFeature_Spatial >= 200) ]
+})
+
+
+
+```
+
+```{r}
+lapply(data.object.filter,function(X) {VlnPlot(X, features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt",'percent.ribo'), ncol = 4)
+})
+```
+
+```{r}
+saveRDS(data.object.filter, file = "brain_filt.rds")
+```
+
+# Normalisation
+
+* we take top 3000 variable features here
+
+```{r eval=FALSE}
+data.object.filter.norm <- lapply(data.object.filter, function(obj.filt){
+  obj.filt <- SCTransform(object = obj.filt, assay = "Spatial", verbose = FALSE, return.only.var.genes = F, vars.to.regress = c("nFeature_Spatial"), variable.features.n = 3000, seed.use = 5139)
+})
+```
+
+```{r}
+saveRDS(data.object.filter.norm, file = "data.object.filter.norm.rds")
+```
+
+### Data integration
+```{r eval=FALSE}
+integration.features <- SelectIntegrationFeatures(object.list = data.object.filter.norm, nfeatures = 3000)
+
+#modifying the maximum size of global variables#
+#for quicker computation
+options(future.globals.maxSize = 8000 * 1024^8)
+
+data.object.filter.norm <- PrepSCTIntegration(object.list = data.object.filter.norm, anchor.features = integration.features, verbose = FALSE)
+
+set.seed(4751)
+integration.anchors <- FindIntegrationAnchors(object.list = data.object.filter.norm, normalization.method = "SCT", anchor.features = integration.features, verbose = FALSE)
+#run below this if the funstion above doesn't run without errors
+#"<integration.anchors <- FindIntegrationAnchors(object.list = data.object.filter.norm, normalization.method = "SCT", anchor.features = integration.features, verbose = FALSE, reference = 1)>"
+
+#integrate the data
+data.object.filter.norm.integrated <- IntegrateData(anchorset = integration.anchors, normalization.method = "SCT", verbose = FALSE)
+
+VariableFeatures(data.object.filter.norm.integrated) <- integration.features
+
+data.object.filter.norm.integrated<- RunPCA(data.object.filter.norm.integrated, assay = "SCT", verbose = FALSE, features = integration.features, npcs = 50, reduction.name = "pca_before_harmony", seed.use = 58291)
+```
+
+```{r}
+saveRDS(data.object.filter.norm.integrated, file = "data.object.filter.norm.integrated.rds")
+```
+
+### Dimensionality reduction and Clustering
+
+OBS! Change the <dims = 1:n> in the codes below, to include the dimensions number you used in the seurat analysis before.
+
+Also change the resolution for the final clusters.
+
+```{r}
+#DimHeatmap()
+
+ElbowPlot(object = data.object.filter.norm.integrated, ndims = 50, reduction = "pca_before_harmony")
+```
+
+
+```{r eval=FALSE}
+DefaultAssay(data.object.filter.norm.integrated) <- "SCT"
+
+#modifying the maximum size of global variables
+options(future.globals.maxSize = 8000 * 1024^2)
+
+#UMAP
+data.object.filter.norm.integrated <- RunUMAP(object = data.object.filter.norm.integrated, dims = 1:30, assay = "SCT", seed.use = 3471, reduction = "pca_before_harmony", reduction.name = "umap_before_harmony")
+
+#Harmony
+set.seed(3185)
+data.object.filter.norm.integrated <- RunHarmony(object = data.object.filter.norm.integrated, group.by.vars = c("sample_condition", "section.name"), theta = c(2, 1), assay.use = "SCT", reduction = "pca_before_harmony", dims.use = 1:30, plot_convergence = T, verbose = F, reduction.save = "harmony_sid")
+
+#UMAP
+data.object.filter.norm.integrated <- RunUMAP(object = data.object.filter.norm.integrated, assay.use = "SCT", reduction = "harmony_sid", dims = 1:30, seed.use = 5147, reduction.name = "umap_after_harmony")
+
+```
+
+```{r}
+#Neighborhood network and Clustering through Louvain
+set.seed(6785)
+data.object.filter.norm.integrated <- FindNeighbors(object = data.object.filter.norm.integrated, assay = "SCT", dims = 1:30, k.param = 23, graph.name = "graph_afterHarmony", reduction = "harmony_sid")
+
+data.object.filter.norm.integrated <- FindClusters(object = data.object.filter.norm.integrated, pc.use = 1:30, resolution = 0.6, save.SNN = T, do.sparse = T, graph.name = "graph_afterHarmony", random.seed = 39152, group.singletons = TRUE)
+
+```
+```{r}
+saveRDS(data.object.filter.norm.integrated, file = "data.object.filter.norm.integrated1.rds")
+```
+
+
+# Visualisation of clusters here
+```{r}
+fill = c("#1F3C88","grey", "#DB6400", "darkgreen", "#FFCB8E", "#DB3A34", "#03C4A1", "purple","black", "brown","blue", "#FFA62B", "pink", "#EBEBEB", "#47E4E0", "#FCF876")
+"#4D194D", "#CEE397")
+names(fill) <- levels(data.object.filter.norm.integrated$seurat_clusters)
+
+DimPlot(data.object.filter.norm.integrated, pt.size = 2, reduction = "umap", group.by = 'seurat_clusters', cols = fill)
+
+DimPlot(data.object.filter.norm.integrated, pt.size = 2, reduction = "umap", group.by = 'section.name')
+SpatialFeaturePlot(object = data.object.filter.norm.integrated,features ='nFeature_SCT')
+
+```
+
+```{r}
+saveRDS(data.object.filter.norm.integrated, file = "data.object.filter.norm.integrated1.rds")
+```
+
+### DE analysis
+```{r eval=FALSE}
+data.object.filter.norm.integrated <- PrepSCTFindMarkers(object = data.object.filter.norm.integrated, assay = 'SCT', verbose = TRUE)
+# DE genes per cluster
+markers.list <- lapply(levels(data.object.filter.norm.integrated$seurat_clusters), function(cl){
+  cl <- FindMarkers(object = data.object.filter.norm.integrated, assay = "SCT", ident.1 = cl, ident.2 = NULL, test.use = "wilcox", min.cells.group = 2, random.seed = 47)
+})
+
+# DE genes for flight vs ground controls
+flight.markers <- FindMarkers(object = data.object.filter.norm.integrated, assay = "SCT", ident.1 = c("flight"), ident.2 = c("ground"), test.use = "wilcox", min.cells.group = 2, random.seed = 47, group.by = "sample_condition")
+```
+
+```{r}
+saveRDS(flight.markers, file = "flight.markers.rds")
+saveRDS(markers.list, file = "markers.list.rds")
+```
+
+```{r}
+inc.genes <- read_csv('/Users/nima.taherpour/Downloads/genes.zip (Unzipped Files)/genes/updated_hearts_brains_INC_genes_only.csv')
+
+red.genes <-read_csv('/Users/nima.taherpour/Downloads/genes.zip (Unzipped Files)/genes/updated_hearts_brains_RED_genes_only.csv')
+```
+
+```{r}
+flight.markers_filtered <- flight.markers[(flight.markers$p_val_adj < 0.05),]
+
+flight.markers_filtered  <- flight.markers_filtered[(flight.markers_filtered$avg_log2FC < -0.5)| (flight.markers_filtered$avg_log2FC == -0.5)|(flight.markers_filtered$avg_log2FC > 0.5)|(flight.markers_filtered$avg_log2FC == 0.5), ]
+
+```
+
+```{r}
+saveRDS(flight.markers_filtered, file = "flight.markers_filtered.rds")
+
+```
+
+```{r}
+library(data.table)
+Pattern <- paste(rownames(flight.markers_filtered), collapse = '|')
+matchedinc <- data.table(inc.genes$x, result = grepl(Pattern, inc.genes$x))
+matchedinc <- matchedinc[matchedinc$result == 'TRUE',]
+matchedinc
+```
+```{r}
+Pattern <- paste(rownames(flight.markers_filtered), collapse = '|')
+matchedred <- data.table(red.genes$x, result = grepl(Pattern, red.genes$x))
+matchedred <- matchedred[matchedred$result == 'TRUE',]
+matchedred
+```
+
