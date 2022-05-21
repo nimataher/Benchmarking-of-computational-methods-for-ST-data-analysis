@@ -1,0 +1,285 @@
+---
+title: "Brain-analysis-Giotto"
+author: Nima Tahepour
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Giotto)
+library(hdf5r)
+library(data.table)
+library(readr)
+library(png)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(jackstraw)
+library(harmony)
+library(multinet) #install.packages('multinet')
+
+```
+
+```{r}
+setwd('/Users/nima.taherpour/Documents/Master thesis projects/Giotto')
+```
+
+```{r}
+data_dir <- '/Users/nima.taherpour/Downloads/spaceranger-outs-data/'
+
+data.list <- list.files(data_dir, recursive = F, full.names = T)
+```
+
+
+
+```{r}
+rr3brain.object <- lapply(data.list, function(X){createGiottoVisiumObject(visium_dir = X,gene_column_index = 2, expr_data ='filter',,h5_gene_ids = c("symbols", "ensembl"),h5_tissue_positions_path = 'tissue_positions_list.csv',h5_image_png_path = 'tissue_hires_image.png',h5_json_scalefactors_path= 'scalefactors_json.json')
+})
+```
+
+
+```{r}
+rr3brain.object <- lapply(rr3brain.object, function(X){addStatistics(gobject = X, expression_values = 'raw',detection_threshold = 0)
+})
+```
+
+
+```{r}
+brain_metadata <- read_excel("/Users/nima.taherpour/Downloads/metadata_rr3brain.xlsx")
+```
+
+```{r}
+for (data in 1:length(rr3brain.object)){
+  
+  #create metadata columns for each sample object
+  section.name = c(rep(brain_metadata$section.name[data],length(rownames(rr3brain.object[[data]]@cell_metadata[["cell"]][["rna"]]))))
+  sample_condition = c(rep(brain_metadata$sample_condition[data],length(rownames(rr3brain.object[[data]]@cell_metadata[["cell"]][["rna"]]))))
+  mouse.id = c(rep(brain_metadata$mouse.id[data], length(rownames(rr3brain.object[[data]]@cell_metadata[["cell"]][["rna"]]))))
+  
+  #convert to named vectors
+  names(section.name) <- rownames(rr3brain.object[[data]]@cell_metadata)
+  names(sample_condition) <- rownames(rr3brain.object[[data]]@cell_metadata)
+  names(mouse.id) <- rownames(rr3brain.object[[data]]@cell_metadata)
+  
+  #add metadata columns to corresponding sample object
+  rr3brain.object[[data]] <- addCellMetadata(gobject = rr3brain.object[[data]], new_metadata  = section.name,vector_name= "section.name")
+  rr3brain.object[[data]] <- addCellMetadata(gobject = rr3brain.object[[data]], new_metadata = sample_condition,vector_name ="sample_condition")
+  rr3brain.object[[data]] <- addCellMetadata(gobject = rr3brain.object[[data]], new_metadata = mouse.id,vector_name = "mouse.id")
+  
+  rm(section.name, sample_condition, mouse.id)
+}
+
+rm(data)
+```
+
+```{r}
+saveRDS(rr3brain.object, file = "Gbrain_unfilt.rds")
+```
+
+
+```{r}
+#Filtering of mitochondrial and ribosome genes
+mtrbgenes<- lapply(rr3brain.object, function(obj){  
+  obj <-fDataDT(obj)
+})
+filtergene <- lapply(mtrbgenes, function(X) {G <- grep(pattern ='^mt|^Rpl|^Rps', x = X$feat_ID,value = TRUE)
+})
+```
+
+
+```{r}
+#Filtering of mitochondrial and ribosome genes
+subset_gene_IDs = list()
+for(index in 1:length(mtrbgenes)){
+  subset_gene_IDs[[index]] <- mtrbgenes[[index]]$feat_ID[!mtrbgenes[[index]]$feat_ID %in% filtergene[[index]]]
+}
+```
+
+
+```{r}
+removemtRR3brain.data<-  mapply(function(X,Y,Z) subsetGiotto(gobject = X,feat_ids = Y),rr3brain.object,subset_gene_IDs )
+```
+
+
+```{r}
+saveRDS(removemtRR3brain.data, file = "Gbrain_removedmtrp.rds")
+```
+
+```{r}
+removemtRR3brain.data <- lapply(removemtRR3brain.data, function(X){addStatistics(gobject = X, expression_values = 'raw',detection_threshold = 0)
+})
+```
+
+
+```{r}
+Metadata <- lapply(removemtRR3brain.data, function(obj){  
+  obj <-pDataDT(obj)
+})
+```
+
+
+```{r}
+Spotsid <- lapply(Metadata, function(obj){
+  obj <- obj[(nr_feats >=200) & (total_expr >=100)]$cell_ID
+})
+```
+
+```{r}
+filteredRR3brain.data<-mapply(function(X,Y) subsetGiotto(gobject = X,cell_ids = Y),removemtRR3brain.data,Spotsid)
+```
+
+
+
+
+
+
+
+
+```{r}
+#normalization through analytical pearson residuals
+uppdated_rr3brain_object <- lapply(filteredRR3brain.data,function(X) {
+  G <- normalizeGiotto(gobject = X, norm_methods = "pearson_resid" ,library_size_norm = TRUE,scalefactor = 6000, log_norm = TRUE, log_offset = 1,logbase = 2, scale_feats = T, scale_cells = T, scale_order = c("first_feats", "first_cells"),update_slot = 'scaled',verbose = T)
+})                                   
+```
+
+```{r}
+uppdated_rr3brain_object <- lapply(uppdated_rr3brain_object, function(X){addStatistics(gobject = X, expression_values = 'scaled',detection_threshold = 0)
+})
+```
+
+
+```{r}
+saveRDS(uppdated_rr3brain_object, file = "normalizedGiotto.rds")
+```
+
+```{r}
+#Joining the objects together
+Joined_rr3brain_object <- joinGiottoObjects(gobject_list = uppdated_rr3brain_object,gobject_names = c('Sample_158_D1','Sample_159_C1','Sample_304_A1','Sample_304_C1'))
+```
+
+
+```{r}
+saveRDS(Joined_rr3brain_object, file = "Joinedobjects.rds")
+```
+
+
+```{r}
+#calculating HVF
+HVF_rr3brain_object <- calculateHVF(gobject = Joined_rr3brain_object, expression_values = 'scaled', method = 'var_p_resid', var_number = 3000)
+```
+
+```{r}
+saveRDS(HVF_rr3brain_object, file = "HVF.rds")
+```
+
+```{r}
+#PCA
+HVF<- HVF_rr3brain_object
+featgenes <- HVF@feat_metadata$cell$rna[hvf == 'yes']$feat_ID
+PCA_rr3brain_object <- runPCA(gobject = HVF_rr3brain_object, expression_values = 'scaled', reduction = c('cells','feats'),feats_to_use = featgenes, scale_unit = FALSE, ncp = 50, method = 'irlba', set_seed=TRUE, set_number = 58291)
+```
+
+
+
+```{r}
+saveRDS(PCA_rr3brain_object, file = "afterPCAtest6.rds")
+```
+
+```{r}
+screePlot(gobject=test6,expression_values = 'scaled',reduction = c('cells','feats'),method = 'irlba',feats_to_use = featgenes, ncp=50)
+```
+
+```{r}
+#UMAP
+BUMAP_rr3brain_object <- runUMAP(gobject = PCA_rr3brain_object, expression_values = 'scaled',reduction = c('cells','feats'),dim_reduction_to_use = "pca", dim_reduction_name = NULL, dimensions_to_use=1:30,name= 'umapbeforeharmony',feats_to_use = featgenes,n_neighbors = 30, n_components = 2, n_epochs = NULL, min_dist = 0.3, set_seed = TRUE, seed_number = 3471)
+
+#Harmony
+set.seed(3185)
+Harmony_rr3brain_object <- runGiottoHarmony(gobject = BUMAP_rr3brain_object,vars_use =c("list_ID", "sample_condition"),do_pca = FALSE, expression_values = 'scaled', dim_reduction_to_use = 'pca', dimensions_to_use = 1:30,name = 'harmony',feats_to_use = featgenes)
+#UMAP
+AUMAP_rr3brain_object<- runUMAP(gobject = Harmony_rr3brain_object, expression_values = 'scaled',reduction = c('cells','feats'),dim_reduction_to_use ='harmony',dim_reduction_name= 'harmony', dimensions_to_use=1:30,name= 'umapafterharmony',feats_to_use = featgenes,n_neighbors = 30, n_components = 2, n_epochs = NULL, min_dist = 0.3,set_seed = TRUE, seed_number = 5147)
+
+```
+
+
+```{r}
+#neighborhood network
+set.seed(6785)
+clust_rr3brain_object<- createNearestNetwork(gobject = AUMAP_rr3brain_object, type = 'sNN', dim_reduction_to_use = 'harmony',dim_reduction_name = 'harmony', dimensions_to_use = 1:30,feats_to_use = featgenes, expression_values = 'scaled',name ='NN.harmony', k = 23)
+
+#LouvainClustering
+clust_rr3brain_object <- doLouvainCluster(gobject = clust_rr3brain_object,version = 'community', name="louvain_clus", nn_network_to_use = 'sNN',network_name= 'NN.harmony', resolution = 1.20, set_seed = TRUE, seed_number = 39152)
+
+
+plotUMAP(gobject = clust_rr3brain_object,dim_reduction_name='umapafterharmony',cell_color = "louvain_clus",show_NN_network = TRUE, network_name = 'NN.harmony') 
+```
+
+```{r}
+saveRDS(clust_rr3brain_object, file = "clust_rr3brain_object.rds")
+```
+
+```{r}
+spatPlot(gobject = clust_rr3brain_object, show_image = T, cell_color= 'louvain_clus',point_size = 0.50)
+```
+
+```{r}
+markers.list <- findMarkers_one_vs_all(gobject = clust_rr3brain_object, expression_values = 'scaled',cluster_column = 'louvain_clus',method = c('scran','gini','mast'),pval = 0.05)
+```
+
+```{r}
+saveRDS(markers.list, file = "markers.list.rds")
+```
+
+```{r}
+markers.list1 <- findMarkers_one_vs_all(gobject = clust_rr3brain_object, expression_values = 'scaled',cluster_column = 'sample_condition',method = c('scran','gini','mast'),pval = 0.05, logFC = -10)
+```
+
+
+
+
+```{r}
+saveRDS(markers.list1, file = "markers.list1.rds")
+```
+
+```{r}
+flight.markers<- markers.list1[(markers.list1$cluster == 'flight'),]
+ground.markers<- markers.list1[(markers.list1$cluster == 'ground'),]
+```
+
+```{r}
+inc.genes <- read_csv('/Users/nima.taherpour/Downloads/genes.zip (Unzipped Files)/genes/updated_hearts_brains_INC_genes_only.csv')
+
+red.genes <-read_csv('/Users/nima.taherpour/Downloads/genes.zip (Unzipped Files)/genes/updated_hearts_brains_RED_genes_only.csv')
+```
+
+```{r}
+ground.markers_filtered <- ground.markers[(ground.markers$FDR < 0.05),]
+
+ground.markers_filtered  <-ground.markers_filtered[(ground.markers_filtered$logFC > 0),]
+
+```
+
+```{r}
+flight.markers_filtered <- flight.markers[(flight.markers$FDR < 0.05),]
+
+flight.markers_filtered  <-flight.markers_filtered[(flight.markers_filtered$logFC > 0),]
+```
+
+```{r}
+Pattern <- paste(flight.markers_filtered$genes, collapse = '|')
+matchedinc <- data.table(inc.genes$x, result = grepl(Pattern, inc.genes$x))
+matchedinc <- matchedinc[matchedinc$result == 'TRUE',]
+matchedinc
+Pattern2 <- paste(ground.markers_filtered$genes, collapse = '|')
+matchedred <- data.table(red.genes$x, result = grepl(Pattern2, red.genes$x))
+matchedred <- matchedred[matchedred$result == 'TRUE',]
+matchedred
+```
+
+
